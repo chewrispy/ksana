@@ -72,6 +72,10 @@ textarea::placeholder{color:var(--sub);opacity:.7}
 .card .m{display:flex;gap:10px;align-items:center;margin-top:10px;font-size:12px;color:var(--sub)}
 .card .m .k{color:var(--accent)}
 .tag{color:var(--accent)}
+.lnk{color:var(--accent);text-decoration:none;background:var(--accent-soft);border-radius:6px;padding:1px 6px;font-family:var(--sans);font-size:.82em;white-space:nowrap;max-width:100%;display:inline-block;overflow:hidden;text-overflow:ellipsis;vertical-align:baseline}
+.c-left{display:flex;align-items:center;gap:10px;min-width:0}
+.attach{font-size:13px;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:999px;padding:5px 11px;white-space:nowrap}
+.card{cursor:pointer}
 .empty{text-align:center;color:var(--sub);font-size:14px;line-height:1.8;padding:50px 0;font-family:var(--serif)}
 
 /* sheet */
@@ -113,7 +117,7 @@ textarea::placeholder{color:var(--sub);opacity:.7}
     <div class="reply-to" id="replyTo"><p id="replyText"></p><button id="replyX" aria-label="이어쓰기 취소">×</button></div>
     <textarea id="input" placeholder="지금 떠오른 생각" rows="4"></textarea>
     <div class="c-foot">
-      <span class="hint" id="hint">#태그를 붙이면 묶여요</span>
+      <div class="c-left"><button class="attach" id="pasteLink" type="button">🔗 링크</button><span class="hint" id="hint">#태그를 붙이면 묶여요</span></div>
       <button class="save" id="save" disabled>남기기</button>
     </div>
   </section>
@@ -227,7 +231,7 @@ $("importFile").addEventListener("change", async e => {
 /* ---------- helpers ---------- */
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 const byId = id => items.find(x => x.id === id);
-const parseTags = t => [...new Set((t.match(/#[^\s#.,!?]+/g) || []).map(s => s.slice(1)))];
+const parseTags = t => [...new Set([...t.replace(/https?:\/\/\S+/g, " ").matchAll(/(?:^|\s)#([^\s#.,!?]+)/g)].map(m => m[1]))];
 function when(ms) {
   const d = new Date(ms), h = d.getHours();
   const part = h < 5 ? "새벽" : h < 11 ? "아침" : h < 17 ? "낮" : h < 21 ? "저녁" : "밤";
@@ -245,21 +249,38 @@ function ago(ms) {
 let toastT;
 function toast(msg) { const t = $("toast"); t.textContent = msg; t.classList.add("on"); clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove("on"), 1800); }
 
-/* text with highlighted #tags */
+/* text with clickable links and highlighted #tags */
+const TOKEN_RE = /(https?:\/\/[^\s<>"'`]*[^\s<>"'`.,!?)\]」』”’])|(#[^\s#.,!?]+)/g;
+function shortUrl(u) {
+  try {
+    const x = new URL(u);
+    let rest = (x.pathname + x.search).replace(/\/$/, "");
+    if (rest.length > 18) rest = rest.slice(0, 16) + "…";
+    return x.hostname.replace(/^www\./, "") + rest;
+  } catch { return u; }
+}
 function richText(node, text) {
   node.textContent = "";
-  const re = /#[^\s#.,!?]+/g; let last = 0, m;
-  while ((m = re.exec(text))) {
+  let last = 0, m;
+  TOKEN_RE.lastIndex = 0;
+  while ((m = TOKEN_RE.exec(text))) {
+    if (m[2] && m.index > 0 && !/\s/.test(text[m.index - 1])) continue; // '#'이 단어 중간이면 태그 아님
     node.append(text.slice(last, m.index));
-    node.append(el("span", "tag", m[0]));
+    if (m[1]) {
+      const a = el("a", "lnk", "🔗 " + shortUrl(m[1]));
+      a.href = m[1]; a.target = "_blank"; a.rel = "noopener noreferrer"; a.title = m[1];
+      a.addEventListener("click", e => e.stopPropagation());
+      node.append(a);
+    } else node.append(el("span", "tag", m[0]));
     last = m.index + m[0].length;
   }
   node.append(text.slice(last));
 }
+const urlsIn = t => t.match(/https?:\/\/[^\s<>"'`]+/g) || [];
 
 /* ---------- similarity (character bigrams, cosine) ---------- */
 function grams(t) {
-  const s = t.replace(/#[^\s]+/g, "").replace(/[^\p{L}\p{N}]+/gu, " ").toLowerCase().trim();
+  const s = t.replace(/https?:\/\/\S+/g, " ").replace(/#[^\s]+/g, "").replace(/[^\p{L}\p{N}]+/gu, " ").toLowerCase().trim();
   const m = new Map();
   for (const w of s.split(" ")) {
     if (!w) continue;
@@ -294,6 +315,25 @@ input.addEventListener("input", () => {
 });
 input.addEventListener("keydown", e => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); save(); } });
 saveBtn.addEventListener("click", save);
+
+/* 링크 붙여넣기: 클립보드의 링크를 커서 위치에 넣어요 */
+function insertAtCursor(str) {
+  const s = input.selectionStart ?? input.value.length, e = input.selectionEnd ?? s;
+  const before = input.value.slice(0, s), after = input.value.slice(e);
+  const pre = before && !/\s$/.test(before) ? " " : "";
+  const post = after && !/^\s/.test(after) ? " " : (after ? "" : " ");
+  input.value = before + pre + str + post + after;
+  const pos = (before + pre + str + post).length;
+  input.focus(); input.setSelectionRange(pos, pos);
+  input.dispatchEvent(new Event("input"));
+}
+$("pasteLink").addEventListener("click", async () => {
+  let clip = "";
+  try { clip = (await navigator.clipboard.readText()).trim(); } catch {}
+  const url = (clip.match(/https?:\/\/\S+/) || [])[0];
+  if (url) { insertAtCursor(url); toast("링크를 붙였어요"); }
+  else { input.focus(); toast(clip ? "복사한 내용에 링크가 없어요" : "링크를 복사한 뒤 눌러 주세요"); }
+});
 $("replyX").addEventListener("click", () => setReply(null));
 $("echoX").addEventListener("click", () => $("echo").classList.remove("on"));
 
@@ -368,12 +408,15 @@ function renderFeed() {
     return;
   }
   for (const x of list) {
-    const c = el("button", "card");
+    const c = el("div", "card"); c.tabIndex = 0; c.setAttribute("role", "button");
+    c.addEventListener("keydown", e => { if (e.key === "Enter" && e.target === c) openSheet(x.id); });
     const t = el("div", "t"); richText(t, x.text);
     const m = el("div", "m");
     m.append(el("span", null, ago(x.createdAt)));
     const n = (x.links || []).filter(byId).length;
     if (n) m.append(el("span", "k", `⟡ ${n}개와 엮임`));
+    const nl = urlsIn(x.text).length;
+    if (nl) m.append(el("span", null, `링크 ${nl}`));
     c.append(t, m);
     c.addEventListener("click", () => openSheet(x.id));
     feed.append(c);
