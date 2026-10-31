@@ -1,5 +1,5 @@
 // 보미의 찰나 — 오프라인에서도 열리도록 앱 파일을 캐시해요.
-const CACHE = "ksana-v2";
+const CACHE = "ksana-v3";
 const FILES = ["./", "./index.html", "./manifest.webmanifest", "./icon-180.png", "./icon-192.png", "./icon-512.png"];
 self.addEventListener("install", e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(FILES))); self.skipWaiting(); });
 self.addEventListener("activate", e => {

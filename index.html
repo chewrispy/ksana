@@ -100,6 +100,20 @@ textarea::placeholder{color:var(--sub);opacity:.7}
 .picker-list{max-height:40vh;overflow:auto;margin-top:8px}
 .toast{position:fixed;left:50%;bottom:calc(24px + env(safe-area-inset-bottom));transform:translateX(-50%) translateY(20px);background:var(--ink);color:var(--bg);font-size:13px;padding:9px 16px;border-radius:999px;opacity:0;transition:.25s;z-index:20;pointer-events:none}
 .toast.on{opacity:1;transform:translateX(-50%)}
+.seg{display:flex;background:var(--line);border-radius:12px;padding:3px;margin-bottom:18px}
+.seg button{flex:1;padding:8px 0;border-radius:9px;font-size:14px;color:var(--sub);font-weight:500}
+.seg button.on{background:var(--surface);color:var(--ink);box-shadow:0 1px 3px rgba(0,0,0,.08)}
+.map-box{position:relative;height:min(68vh,620px);background:var(--surface);border:1px solid var(--line);border-radius:20px;overflow:hidden;touch-action:none}
+#mapCanvas{width:100%;height:100%;display:block;cursor:grab}
+#mapCanvas.dragging{cursor:grabbing}
+.map-empty{position:absolute;inset:0;display:none;align-items:center;justify-content:center;text-align:center;font-family:var(--serif);color:var(--sub);font-size:15px;line-height:1.8;pointer-events:none}
+.map-empty.on{display:flex}
+.map-zoom{position:absolute;right:10px;bottom:10px;display:flex;flex-direction:column;gap:6px}
+.map-zoom button{width:34px;height:34px;border-radius:10px;background:var(--bg);border:1px solid var(--line);font-size:17px;color:var(--ink)}
+.legend{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:12px;color:var(--sub);margin-top:12px;align-items:center}
+.legend span{display:flex;align-items:center;gap:6px}
+.legend i{display:inline-block;width:18px;height:0;border-top:2px solid var(--accent)}
+.legend i.lg-dash{border-top:2px dashed var(--sub)}
 .store-note{font-size:12px;color:var(--sub);text-align:center;margin-top:36px}
 .backup{display:none;justify-content:center;gap:8px;font-size:12px;color:var(--sub);margin-top:8px}
 .backup.on{display:flex}
@@ -113,6 +127,12 @@ textarea::placeholder{color:var(--sub);opacity:.7}
     <div class="count" id="count"></div>
   </header>
 
+  <nav class="seg" id="seg">
+    <button data-view="list" class="on">찰나</button>
+    <button data-view="map">생각 지도</button>
+  </nav>
+
+  <div id="listView">
   <section class="composer">
     <div class="reply-to" id="replyTo"><p id="replyText"></p><button id="replyX" aria-label="이어쓰기 취소">×</button></div>
     <textarea id="input" placeholder="지금 떠오른 생각" rows="4"></textarea>
@@ -130,6 +150,20 @@ textarea::placeholder{color:var(--sub);opacity:.7}
   <div class="tools"><input class="search" id="search" type="search" placeholder="찰나 찾기"></div>
   <div class="tags" id="tags"></div>
   <div class="feed" id="feed"></div>
+  </div>
+
+  <div id="mapView" hidden>
+    <div class="map-box" id="mapBox">
+      <canvas id="mapCanvas"></canvas>
+      <div class="map-empty" id="mapEmpty">찰나가 몇 개 더 쌓이면<br>생각들이 이어지기 시작해요</div>
+      <div class="map-zoom"><button id="zoomIn" aria-label="확대">+</button><button id="zoomOut" aria-label="축소">−</button><button id="zoomFit" aria-label="전체 보기">⤢</button></div>
+    </div>
+    <div class="legend">
+      <span><i class="lg-solid"></i>엮은 생각</span>
+      <span><i class="lg-dash"></i>닮은 생각</span>
+      <span>점이 클수록 자주 찾아온 생각 · 흐릴수록 오래된 생각</span>
+    </div>
+  </div>
   <p class="store-note" id="storeNote"></p>
   <div class="backup" id="backup">
     <button id="exportBtn">백업 파일로 내보내기</button>
@@ -289,14 +323,25 @@ function grams(t) {
   }
   return m;
 }
+const gramCache = new Map();
+function gramsOf(x) { const c = gramCache.get(x.id); if (c && c.t === x.text) return c.g; const g = grams(x.text); gramCache.set(x.id, { t: x.text, g }); return g; }
+// 여러 찰나에 흔히 나오는 말(~싶다, ~하다 등)은 가볍게, 드문 말은 무겁게 쳐요
+let IDF = new Map();
+const wOf = k => IDF.size ? (IDF.get(k) ?? 1.5) : 1;
+function updateIdf() {
+  const df = new Map(), N = items.length;
+  for (const x of items) for (const k of gramsOf(x).keys()) df.set(k, (df.get(k) || 0) + 1);
+  IDF = new Map();
+  for (const [k, d] of df) IDF.set(k, d < 2 ? 1.5 : Math.max(0, Math.log((N + 1) / (d + .5))) / Math.log(N + 1) * 1.5);
+}
 function cos(a, b) {
   let dot = 0, na = 0, nb = 0;
-  for (const [k, v] of a) { na += v * v; if (b.has(k)) dot += v * b.get(k); }
-  for (const v of b.values()) nb += v * v;
+  for (const [k, v] of a) { const w = wOf(k) * v; na += w * w; if (b.has(k)) dot += w * b.get(k) * wOf(k); }
+  for (const [k, v] of b) { const w = wOf(k) * v; nb += w * w; }
   return na && nb ? dot / Math.sqrt(na * nb) : 0;
 }
 function similar(target, n = 3, minScore = 0.18) {
-  const g = grams(target.text);
+  const g = gramsOf(target);
   return items
     .filter(x => x.id !== target.id && !(target.links || []).includes(x.id))
     .map(x => ({ x, s: cos(g, grams(x.text)) + ((x.tags || []).some(t => (target.tags || []).includes(t)) ? 0.15 : 0) }))
@@ -380,8 +425,10 @@ $("search").addEventListener("input", e => { query = e.target.value.trim().toLow
 
 function render() {
   items.sort((a, b) => b.createdAt - a.createdAt);
+  updateIdf();
   $("count").textContent = items.length ? `${items.length}개의 찰나` : "";
   renderTags(); renderFeed();
+  if (view === "map") mapRefresh();
   if (openId) { if (byId(openId)) renderSheet(); else closeSheet(); }
 }
 
@@ -528,6 +575,210 @@ function renderSheet() {
     body.append(sec);
   }
 }
+
+/* ---------- 생각 지도 ---------- */
+let view = "list";
+document.querySelectorAll("#seg button").forEach(b => b.addEventListener("click", () => setView(b.dataset.view)));
+function setView(v) {
+  view = v;
+  document.querySelectorAll("#seg button").forEach(b => b.classList.toggle("on", b.dataset.view === v));
+  $("listView").hidden = v !== "list";
+  $("mapView").hidden = v !== "map";
+  if (v === "map") { mapResize(); mapRefresh(true); }
+}
+
+const cv = $("mapCanvas"), ctx = cv.getContext("2d");
+const pos = new Map();            // id -> {x,y,vx,vy,fixed}
+let nodes = [], edges = [], cam = { x: 0, y: 0, k: 1 }, W = 0, H = 0, alpha = 0, raf = 0;
+
+function mapResize() {
+  const r = $("mapBox").getBoundingClientRect(), d = window.devicePixelRatio || 1;
+  W = r.width; H = r.height; cv.width = W * d; cv.height = H * d; ctx.setTransform(d, 0, 0, d, 0, 0);
+}
+window.addEventListener("resize", () => { if (view === "map") { mapResize(); draw(); } });
+
+function buildGraph() {
+  const ids = new Set(items.map(x => x.id));
+  const key = (a, b) => a < b ? a + "|" + b : b + "|" + a;
+  const em = new Map();
+  for (const x of items) for (const l of x.links || []) if (ids.has(l)) em.set(key(x.id, l), { a: x.id, b: l, kind: "link" });
+  // 닮은 생각: 각 찰나마다 가장 닮은 찰나 최대 3개
+  const gs = items.map(gramsOf);
+  for (let i = 0; i < items.length; i++) {
+    const cand = [];
+    for (let j = 0; j < items.length; j++) {
+      if (i === j) continue;
+      let sc = cos(gs[i], gs[j]);
+      if ((items[i].tags || []).some(t => (items[j].tags || []).includes(t))) sc += 0.15;
+      if (sc >= 0.22) cand.push([j, sc]);
+    }
+    cand.sort((a, b) => b[1] - a[1]).slice(0, 3).forEach(([j, sc]) => {
+      const k = key(items[i].id, items[j].id);
+      if (!em.has(k)) em.set(k, { a: items[i].id, b: items[j].id, kind: "sim", w: sc });
+    });
+  }
+  edges = [...em.values()];
+  const deg = new Map();
+  edges.forEach(e => { deg.set(e.a, (deg.get(e.a) || 0) + 1); deg.set(e.b, (deg.get(e.b) || 0) + 1); });
+  const now = Date.now();
+  nodes = items.map(x => {
+    let p = pos.get(x.id);
+    if (!p) {
+      // 새 점은 엮인 점 근처에서, 없으면 가운데 근처에서 태어나요
+      const nb = (x.links || []).map(l => pos.get(l)).find(Boolean);
+      p = { x: (nb ? nb.x : 0) + (Math.random() - .5) * 60, y: (nb ? nb.y : 0) + (Math.random() - .5) * 60, vx: 0, vy: 0 };
+      pos.set(x.id, p);
+    }
+    const d = deg.get(x.id) || 0;
+    const days = (now - x.createdAt) / 86400000;
+    return { id: x.id, it: x, p, r: 5 + Math.sqrt(d) * 3.2, deg: d, fade: Math.max(.35, 1 - days / 240) };
+  });
+  for (const id of [...pos.keys()]) if (!ids.has(id)) pos.delete(id);
+}
+
+function step() {
+  const N = nodes.length;
+  for (let i = 0; i < N; i++) {
+    const a = nodes[i].p;
+    for (let j = i + 1; j < N; j++) {
+      const b = nodes[j].p;
+      let dx = b.x - a.x, dy = b.y - a.y, d2 = dx * dx + dy * dy || .01;
+      if (d2 > 160000) continue;
+      const f = 2600 / d2 * alpha, d = Math.sqrt(d2);
+      dx /= d; dy /= d;
+      a.vx -= dx * f; a.vy -= dy * f; b.vx += dx * f; b.vy += dy * f;
+    }
+  }
+  for (const e of edges) {
+    const a = pos.get(e.a), b = pos.get(e.b); if (!a || !b) continue;
+    const L = e.kind === "link" ? 55 : 95, s = e.kind === "link" ? .08 : .03;
+    const dx = b.x - a.x, dy = b.y - a.y, d = Math.sqrt(dx * dx + dy * dy) || .01;
+    const f = (d - L) / d * s * alpha;
+    a.vx += dx * f; a.vy += dy * f; b.vx -= dx * f; b.vy -= dy * f;
+  }
+  for (const n of nodes) {
+    const p = n.p;
+    p.vx -= p.x * .006 * alpha; p.vy -= p.y * .006 * alpha;   // 가운데로 살짝
+    if (p === dragNode?.p) { p.vx = p.vy = 0; continue; }
+    p.vx *= .6; p.vy *= .6; p.x += p.vx; p.y += p.vy;
+  }
+}
+
+function loop() {
+  step(); alpha *= .985; draw();
+  raf = alpha > .02 || dragNode ? requestAnimationFrame(loop) : 0;
+}
+function kick(a = .6) { alpha = Math.max(alpha, a); if (!raf) raf = requestAnimationFrame(loop); }
+
+function mapRefresh(fit) {
+  buildGraph();
+  $("mapEmpty").classList.toggle("on", items.length < 2);
+  if (fit) { alpha = 1; for (let i = 0; i < 400; i++) { step(); alpha *= .99; } fitView(); draw(); kick(.05); }
+  else kick(.4);
+}
+
+function fitView() {
+  if (!nodes.length) { cam = { x: 0, y: 0, k: 1 }; return; }
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  nodes.forEach(n => { x0 = Math.min(x0, n.p.x); y0 = Math.min(y0, n.p.y); x1 = Math.max(x1, n.p.x); y1 = Math.max(y1, n.p.y); });
+  const k = Math.min(1.6, (W - 110) / Math.max(1, x1 - x0), (H - 110) / Math.max(1, y1 - y0));
+  cam = { k, x: W / 2 - (x0 + x1) / 2 * k, y: H / 2 - (y0 + y1) / 2 * k };
+}
+
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+function draw() {
+  if (view !== "map") return;
+  const C = { ink: css("--ink"), sub: css("--sub"), acc: css("--accent"), surf: css("--surface") };
+  ctx.clearRect(0, 0, W, H);
+  ctx.save(); ctx.translate(cam.x, cam.y); ctx.scale(cam.k, cam.k);
+  const focus = hoverId || null;
+  const near = new Set();
+  if (focus) edges.forEach(e => { if (e.a === focus) near.add(e.b); if (e.b === focus) near.add(e.a); });
+  for (const e of edges) {
+    const a = pos.get(e.a), b = pos.get(e.b); if (!a || !b) continue;
+    const on = focus && (e.a === focus || e.b === focus);
+    ctx.globalAlpha = focus ? (on ? .9 : .12) : (e.kind === "link" ? .7 : .45);
+    ctx.strokeStyle = e.kind === "link" ? C.acc : C.sub;
+    ctx.lineWidth = (e.kind === "link" ? 1.8 : 1.1) / Math.sqrt(cam.k);
+    ctx.setLineDash(e.kind === "link" ? [] : [4 / cam.k, 4 / cam.k]);
+    ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+  }
+  ctx.setLineDash([]);
+  for (const n of nodes) {
+    const dim = focus && n.id !== focus && !near.has(n.id);
+    ctx.globalAlpha = dim ? .15 : n.fade;
+    ctx.fillStyle = n.deg ? C.acc : C.sub;
+    ctx.beginPath(); ctx.arc(n.p.x, n.p.y, n.r, 0, Math.PI * 2); ctx.fill();
+    if (n.id === focus) { ctx.globalAlpha = 1; ctx.strokeStyle = C.ink; ctx.lineWidth = 2 / cam.k; ctx.stroke(); }
+  }
+  // 글씨: 크게 볼 때, 또는 큰 점/선택된 점
+  ctx.font = `${12 / cam.k}px ${css("--sans")}`; ctx.textAlign = "center"; ctx.textBaseline = "top";
+  for (const n of nodes) {
+    const show = n.id === focus || near.has(n.id) || (!focus && (cam.k > 2 || n.deg >= (nodes.length < 40 ? 2 : 4)));
+    if (!show) continue;
+    const label = n.it.text.replace(/https?:\/\/\S+/g, "🔗").replace(/\s+/g, " ").slice(0, 14) + (n.it.text.length > 14 ? "…" : "");
+    ctx.globalAlpha = n.id === focus ? 1 : .8;
+    ctx.lineWidth = 3 / cam.k; ctx.strokeStyle = C.surf; ctx.strokeText(label, n.p.x, n.p.y + n.r + 3 / cam.k);
+    ctx.fillStyle = C.ink; ctx.fillText(label, n.p.x, n.p.y + n.r + 3 / cam.k);
+  }
+  ctx.restore(); ctx.globalAlpha = 1;
+}
+
+/* 지도 조작: 끌어서 이동, 두 손가락/휠로 확대, 점 끌기, 점 누르면 열기 */
+const toWorld = (sx, sy) => ({ x: (sx - cam.x) / cam.k, y: (sy - cam.y) / cam.k });
+function hit(sx, sy) {
+  const w = toWorld(sx, sy); let best = null, bd = Infinity;
+  for (const n of nodes) { const d = Math.hypot(n.p.x - w.x, n.p.y - w.y); if (d < Math.max(n.r + 6 / cam.k, 14 / cam.k) && d < bd) { bd = d; best = n; } }
+  return best;
+}
+const ptrs = new Map();
+let dragNode = null, panStart = null, pinch = null, moved = 0, hoverId = null;
+function local(e) { const r = cv.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; }
+function zoomAt(sx, sy, f) {
+  const k = Math.min(4, Math.max(.25, cam.k * f)); f = k / cam.k;
+  cam.x = sx - (sx - cam.x) * f; cam.y = sy - (sy - cam.y) * f; cam.k = k; draw();
+}
+cv.addEventListener("pointerdown", e => {
+  cv.setPointerCapture(e.pointerId); const p = local(e); ptrs.set(e.pointerId, p); moved = 0;
+  if (ptrs.size === 2) {
+    const [a, b] = [...ptrs.values()];
+    pinch = { d: Math.hypot(a.x - b.x, a.y - b.y), k: cam.k }; dragNode = null; panStart = null; return;
+  }
+  const n = hit(p.x, p.y);
+  if (n) { dragNode = n; hoverId = n.id; kick(.3); }
+  else { panStart = { x: p.x - cam.x, y: p.y - cam.y }; hoverId = null; }
+  cv.classList.add("dragging"); draw();
+});
+cv.addEventListener("pointermove", e => {
+  const p = local(e);
+  if (!ptrs.has(e.pointerId)) {        // 마우스 호버
+    const n = hit(p.x, p.y), id = n ? n.id : null;
+    if (id !== hoverId) { hoverId = id; cv.style.cursor = n ? "pointer" : ""; draw(); }
+    return;
+  }
+  const prev = ptrs.get(e.pointerId); moved += Math.hypot(p.x - prev.x, p.y - prev.y); ptrs.set(e.pointerId, p);
+  if (pinch && ptrs.size === 2) {
+    const [a, b] = [...ptrs.values()];
+    const d = Math.hypot(a.x - b.x, a.y - b.y);
+    zoomAt((a.x + b.x) / 2, (a.y + b.y) / 2, (pinch.k * d / pinch.d) / cam.k); return;
+  }
+  if (dragNode && moved > 4) { const w = toWorld(p.x, p.y); dragNode.p.x = w.x; dragNode.p.y = w.y; kick(.3); }
+  else if (panStart) { cam.x = p.x - panStart.x; cam.y = p.y - panStart.y; draw(); }
+});
+function endPtr(e) {
+  ptrs.delete(e.pointerId);
+  if (ptrs.size < 2) pinch = null;
+  if (ptrs.size) return;
+  if (dragNode && moved <= 6) openSheet(dragNode.id);
+  if (!dragNode && moved <= 6) { hoverId = null; draw(); }
+  dragNode = null; panStart = null; cv.classList.remove("dragging");
+}
+cv.addEventListener("pointerup", endPtr);
+cv.addEventListener("pointercancel", endPtr);
+cv.addEventListener("wheel", e => { e.preventDefault(); const p = local(e); zoomAt(p.x, p.y, Math.exp(-e.deltaY * .0015)); }, { passive: false });
+$("zoomIn").addEventListener("click", () => zoomAt(W / 2, H / 2, 1.3));
+$("zoomOut").addEventListener("click", () => zoomAt(W / 2, H / 2, 1 / 1.3));
+$("zoomFit").addEventListener("click", () => { fitView(); draw(); });
 
 /* ---------- boot ---------- */
 saveBtn.disabled = !input.value.trim(); autosize();
